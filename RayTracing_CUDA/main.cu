@@ -16,7 +16,10 @@ void check_cuda(cudaError_t result, char const* const func, const char* const fi
     }
 }
 
-__global__ void render(vec3* fb, int max_x, int max_y, camera** cam, hittable ** d_world) {
+__constant__ int d_samples_per_pixel;
+__constant__ float d_pixel_samples_scale;
+
+__global__ void render(vec3* fb, int max_x, int max_y, int samples_per_pixel, camera** cam, hittable ** d_world, curandState* rand_state) {
     int col = threadIdx.x + blockIdx.x * blockDim.x;
     int row = threadIdx.y + blockIdx.y * blockDim.y;
 
@@ -27,9 +30,14 @@ __global__ void render(vec3* fb, int max_x, int max_y, camera** cam, hittable **
     float u = float(col) / float(max_x);
     float v = float(row) / float(max_y);
 
-
-    ray r = (*cam) -> get_ray(col, row);
-    fb[pixel_index] = ray_color(r, d_world);
+    color pixel_color(0, 0, 0);
+    for (int sample = 0; sample < samples_per_pixel; sample++) {
+        ray r = (*cam)->get_ray(col, row, rand_state);
+        pixel_color += ray_color(r, d_world);
+    }
+    pixel_color /= float(samples_per_pixel);
+    
+    fb[pixel_index] = pixel_color;
 }
 
 //__global__ void render(vec3* fb, int max_x, int max_y, camera** cam, hittable** d_world) {
@@ -91,8 +99,10 @@ __global__ void generate_random_numbers(curandState* rand_states, double* result
 int main() {
     auto aspect_ratio = 16.0 / 9.0;
     int image_width = 1200;
-    int tx = 8;                                  // Thread x dimension
+    int tx = 8;                                  
     int ty = 8;
+    int samples_per_pixel = 100;
+
     // Calculate the image height, and ensure that it's at least 1.
     int image_height = int(image_width / aspect_ratio);
     image_height = (image_height < 1) ? 1 : image_height;
@@ -102,6 +112,9 @@ int main() {
 
     int num_pixels = image_width * image_height;
     size_t fb_size = num_pixels * sizeof(vec3);
+
+    curandState* rend_rand;                // For rendering        
+    checkCudaErrors(cudaMalloc((void**)&rend_rand, num_pixels * sizeof(curandState)));
 
     // Allocate memory on CPU and GPU
     vec3* d_fb;                        // Device memory
@@ -139,7 +152,7 @@ int main() {
     // 일반적
     dim3 blocks(image_width / tx + 1, image_height / ty + 1);
     dim3 threads(tx, ty);
-    render << <blocks, threads >> > (d_fb, image_width, image_height, cam, d_world);
+    render << <blocks, threads >> > (d_fb, image_width, image_height, samples_per_pixel, cam, d_world, rend_rand);
 
     // 안 되는거 보완
     //int threads_per_block = 256;

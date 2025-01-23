@@ -14,13 +14,14 @@ public:
     vec3   unit_direction;
     float  aspect_ratio = 16.0/9.0;  // Ratio of image width over height
     int    image_width = 1200;  // Rendered image width in pixel count
+    int    samples_per_pixel = 10;   // Count of random samples for each pixel
 
     __device__ camera() {
         initialize();
     }
     __device__ void initialize();
     __device__ color ray_color(const ray& r, hittable** world);
-    __device__ ray get_ray(float col, float row);
+    __device__ ray get_ray(float col, float row, curandState* local_rand_state);
 };
 
 __device__ void camera::initialize() {
@@ -62,10 +63,14 @@ __device__ void camera::initialize() {
 }
 
 
-__device__ ray camera::get_ray(float col, float row) {
+__device__ ray camera::get_ray(float col, float row, curandState* local_rand_state) {
+    auto offset = sample_square(local_rand_state);
+    auto pixel_sample = pixel00_loc
+        + ((col + offset.x()) * pixel_delta_u)
+        + ((row + offset.y()) * pixel_delta_v);
+
     vec3 ray_origin = center;
-    vec3 cur_pixel = pixel00_loc + col * pixel_delta_u + row * pixel_delta_v;
-    vec3 ray_direction = cur_pixel - ray_origin;
+    vec3 ray_direction = pixel_sample - ray_origin;
 
     return ray(ray_origin, ray_direction);
 }
