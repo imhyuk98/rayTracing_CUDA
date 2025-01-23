@@ -13,6 +13,16 @@
   <ItemGroup>
     <CudaCompile Include="main.cu" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="camera.h" />
+    <ClInclude Include="hittable.h" />
+    <ClInclude Include="hittable_list.h" />
+    <ClInclude Include="interval.h" />
+    <ClInclude Include="ray.h" />
+    <ClInclude Include="sphere.h" />
+    <ClInclude Include="utile.h" />
+    <ClInclude Include="vec3.h" />
+  </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{B0A29E91-767D-4DEE-9DC1-B4FE24A83346}</ProjectGuid>
     <RootNamespace>RayTracing_CUDA</RootNamespace>
