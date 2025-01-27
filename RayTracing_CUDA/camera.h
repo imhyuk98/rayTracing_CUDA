@@ -75,18 +75,63 @@ __device__ ray camera::get_ray(float col, float row, curandState* local_rand_sta
     return ray(ray_origin, ray_direction);
 }
 
-__device__ color ray_color(const ray& r, hittable** world) {
-    hit_record rec;
+//__device__ color ray_color(const ray& r, hittable** world, curandState* local_rand_state) {
+//    ray cur_ray = r;
+//    float cur_attenuation = 1.0f;
+//    for(int i = 0; i < 50; i++) {
+//        hit_record rec;
+//        if ((*world)->hit(cur_ray, interval(0.001f, FLT_MAX), rec)) {
+//            vec3 target = rec.p + rec.normal + random_in_unit_sphere(local_rand_state);
+//            cur_attenuation *= 0.5f;
+//            cur_ray = ray(rec.p, target-rec.p);
+//        }
+//        else {
+//            vec3 unit_direction = unit_vector(cur_ray.direction());
+//            float t = 0.5f*(unit_direction.y() + 1.0f);
+//            vec3 c = (1.0f-t)*vec3(1.0, 1.0, 1.0) + t*vec3(0.5, 0.7, 1.0);
+//            return cur_attenuation * c;
+//        }
+//    }
+//    return vec3(0.0,0.0,0.0); // exceeded recursion
+//}
 
+__device__ color ray_color(const ray& r, hittable** world, curandState* local_rand_state) {
     ray cur_ray = r;
-
-    if ((*world)->hit(cur_ray, interval(0, infinity), rec)) {
-        return 0.5 * (rec.normal + color(1, 1, 1));
+    float cur_attenuation = 1.0f;
+    for (int i = 0; i < 50; i++) {
+        hit_record rec;
+        if ((*world)->hit(cur_ray, interval(0.001f, infinity), rec)) {
+            vec3 direction = rec.normal + random_unit_vector(local_rand_state);
+            cur_attenuation *= 0.5f;
+            cur_ray = ray(rec.p, direction - rec.p);
+        }
+        else{
+            vec3 unit_direction = unit_vector(cur_ray.direction());
+            auto t = 0.5 * (unit_direction.y() + 1.0);
+            vec3 c = (1.0f-t)*vec3(1.0, 1.0, 1.0) + t*vec3(0.5, 0.7, 1.0);
+            return cur_attenuation * c;
+        }
     }
-
-    vec3 unit_direction = unit_vector(cur_ray.direction());
-    auto a = 0.5 * (unit_direction.y() + 1.0);
-    return (1.0 - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0);
+    return vec3(0.0, 0.0, 0.0); // exceeded recursion
 }
+
+//ray cur_ray = r;
+//float cur_attenuation = 1.0f;
+//for (int i = 0; i < 50; i++) {
+//    hit_record rec;
+//    if ((*world)->hit(cur_ray, interval(0.001f, FLT_MAX), rec)) {
+//        vec3 target = rec.p + rec.normal + random_unit_vector(local_rand_state);
+//        cur_attenuation *= 0.5f;
+//        cur_ray = ray(rec.p, target - rec.p);
+//    }
+//    else {
+//        vec3 unit_direction = unit_vector(cur_ray.direction());
+//        float t = 0.5f * (unit_direction.y() + 1.0f);
+//        vec3 c = (1.0f - t) * vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);
+//        return cur_attenuation * c;
+//    }
+// 
+
+
 
 #endif

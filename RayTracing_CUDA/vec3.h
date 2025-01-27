@@ -165,11 +165,22 @@ __host__ __device__ inline vec3 unit_vector(vec3 v) {
     return v / v.length();
 }
 
+#define RANDVEC3 vec3(curand_uniform(local_rand_state),curand_uniform(local_rand_state),curand_uniform(local_rand_state))
+
+__device__ vec3 random_in_unit_sphere(curandState* local_rand_state) {
+    vec3 p;
+    do {
+        p = 2.0f * RANDVEC3 - vec3(1, 1, 1);
+    } while (p.length_squared() >= 1.0f);
+    return p;
+}
+
 __device__ inline vec3 random_unit_vector(curandState* rand_state) {
     while (true) {
         auto p = vec3::random(-1.0f, 1.0f, rand_state);
         auto lensq = p.length_squared();
-        if (1e-160 < lensq && lensq <= 1) return p / std::sqrt(lensq);  // Checking whether point P is inside the sphere
+        if (1e-160 < lensq && lensq <= 1) 
+            return p / std::sqrt(lensq);  // Checking whether point P is inside the sphere
     }
 }
 

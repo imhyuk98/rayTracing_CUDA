@@ -19,24 +19,47 @@ void check_cuda(cudaError_t result, char const* const func, const char* const fi
 __constant__ int d_samples_per_pixel;
 __constant__ float d_pixel_samples_scale;
 
+// Initialize cuRAND state for a single thread
+__global__ void rand_init(curandState* rand_state) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        curand_init(1984, 0, 0, rand_state);            // Custom seed : 1984
+    }
+}
+
+// Initialize cuRAND state for each pixel, ensuring a unique random sequence for each pixel
+__global__ void render_init(int max_x, int max_y, curandState* rand_state) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;      // range [0, 1200]
+    int j = threadIdx.y + blockIdx.y * blockDim.y;      // range [0, 679]
+
+    if ((i >= max_x) || (j >= max_y)) return;
+
+    int pixel_index = j * max_x + i;
+    curand_init(1984 + pixel_index, 0, 0, &rand_state[pixel_index]);    // Each thread gets different seed number (Each ramdom number generation pattern must be independent per each thread)
+}
+
 __global__ void render(vec3* fb, int max_x, int max_y, int samples_per_pixel, camera** cam, hittable ** d_world, curandState* rand_state) {
     int col = threadIdx.x + blockIdx.x * blockDim.x;
     int row = threadIdx.y + blockIdx.y * blockDim.y;
-
+    int depth = 50;
     int pixel_index = row * max_x + col;
+    curandState local_rand_state = rand_state[pixel_index];
 
     if ((col >= max_x) || (row >= max_y)) return;
 
     float u = float(col) / float(max_x);
     float v = float(row) / float(max_y);
 
-    color pixel_color(0, 0, 0);
+    color pixel_color(0, 0, 0); 
     for (int sample = 0; sample < samples_per_pixel; sample++) {
-        ray r = (*cam)->get_ray(col, row, rand_state);
-        pixel_color += ray_color(r, d_world);
+        ray r = (*cam)->get_ray(col, row, &local_rand_state);
+        pixel_color += ray_color(r, d_world, &local_rand_state);
     }
     pixel_color /= float(samples_per_pixel);
     
+    pixel_color[0] = linear_to_gamma(pixel_color[0]);
+    pixel_color[1] = linear_to_gamma(pixel_color[1]);
+    pixel_color[2] = linear_to_gamma(pixel_color[2]);
+        
     fb[pixel_index] = pixel_color;
 }
 
@@ -46,7 +69,7 @@ __global__ void render(vec3* fb, int max_x, int max_y, int samples_per_pixel, ca
 //
 //    if (thread_id >= max_x * max_y) return;
 //
-//    // 1D 인덱스를 2D (col, row)로 변환
+//    // 1D 인덱스를 2D (col, row)로 변환w 1
 //    int col = thread_id % max_x;  // 열 = thread_id를 이미지 가로 크기로 나눈 나머지
 //    int row = thread_id / max_x;  // 행 = thread_id를 이미지 가로 크기로 나눈 몫
 //
@@ -78,30 +101,12 @@ __global__ void free_world(hittable** d_object_list, hittable** d_world, camera*
     delete* cam;
 }
 
-__global__ void init_random_states(curandState* rand_states, unsigned long seed) {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    curand_init(seed, idx, 0, &rand_states[idx]);
-}
-
-// 랜덤 값을 생성하는 커널
-__global__ void generate_random_numbers(curandState* rand_states, double* results, int n) {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= n) return;
-
-    // 각 스레드의 랜덤 상태를 가져와 [0, 1) 범위의 랜덤 값 생성
-    curandState local_rand_state = rand_states[idx];
-    results[idx] = random_double(0.0, 1.0, &local_rand_state);
-
-    // 상태를 업데이트
-    rand_states[idx] = local_rand_state;
-}
-
 int main() {
     auto aspect_ratio = 16.0 / 9.0;
     int image_width = 1200;
     int tx = 8;                                  
     int ty = 8;
-    int samples_per_pixel = 100;
+    int samples_per_pixel = 500;
 
     // Calculate the image height, and ensure that it's at least 1.
     int image_height = int(image_width / aspect_ratio);
@@ -113,12 +118,19 @@ int main() {
     int num_pixels = image_width * image_height;
     size_t fb_size = num_pixels * sizeof(vec3);
 
-    curandState* rend_rand;                // For rendering        
-    checkCudaErrors(cudaMalloc((void**)&rend_rand, num_pixels * sizeof(curandState)));
+    // Allocate random states
+    curandState* d_rand_state_1;                // For rendering        
+    checkCudaErrors(cudaMalloc((void**)&d_rand_state_1, num_pixels * sizeof(curandState)));
+    curandState* d_rand_state_2;                // For world creation
+    checkCudaErrors(cudaMalloc((void**)&d_rand_state_2, 1 * sizeof(curandState)));
 
     // Allocate memory on CPU and GPU
     vec3* d_fb;                        // Device memory
     checkCudaErrors(cudaMalloc((void**)&d_fb, fb_size));
+
+    rand_init << <1, 1 >> > (d_rand_state_2);   // 2nd random state initialization
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     hittable** d_object_list;
     int num_hittables = 3;         // Total object number
@@ -149,10 +161,16 @@ int main() {
     //int blocks_per_grid = (num_pixels + threads_per_block - 1) / threads_per_block; // Calculate grid size
     //render << <blocks_per_grid, threads_per_block >> > (d_fb, image_width, image_height, cam, d_world);
 
-    // 일반적
+    // 일반적c
+
     dim3 blocks(image_width / tx + 1, image_height / ty + 1);
     dim3 threads(tx, ty);
-    render << <blocks, threads >> > (d_fb, image_width, image_height, samples_per_pixel, cam, d_world, rend_rand);
+
+    render_init << <blocks, threads >> > (image_width, image_height, d_rand_state_1);   // 1st random state initialization
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    render << <blocks, threads >> > (d_fb, image_width, image_height, samples_per_pixel, cam, d_world, d_rand_state_1);
 
     // 안 되는거 보완
     //int threads_per_block = 256;
@@ -179,6 +197,7 @@ int main() {
             auto ir = h_fb[pixel_index].r();
             auto ig = h_fb[pixel_index].g();
             auto ib = h_fb[pixel_index].b();
+
 
             static const interval intensity(0.000, 0.999);
             int rbyte = int(256 * intensity.clamp(ir));
