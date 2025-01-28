@@ -1,12 +1,12 @@
-#ifndef VEC3H
-#define VEC3H
-
-#include "cuda_runtime.h"
-#include "device_launch_parameters.h"
-
+#pragma once
 #include <math.h>
 #include <stdlib.h>
 #include <iostream>
+
+// Utility Function (old rtweekend.h & color.h)
+__host__ __device__ inline float degrees_to_radians(float degrees) {
+    return degrees * 3.1415926535897932385 / 180.0;
+}
 
 __device__ inline float linear_to_gamma(float linear_component)
 {
@@ -25,10 +25,11 @@ __device__ inline float random_float(float min, float max, curandState* state) {
     return min + (max - min) * curand_uniform(state);
 }
 
+
 class vec3 {
-
-
 public:
+    float e[3];
+
     __host__ __device__ vec3() {}
     __host__ __device__ vec3(float e0, float e1, float e2) { e[0] = e0; e[1] = e1; e[2] = e2; }
     __host__ __device__ inline float x() const { return e[0]; }
@@ -50,19 +51,25 @@ public:
     __host__ __device__ inline vec3& operator*=(const float t);
     __host__ __device__ inline vec3& operator/=(const float t);
 
-    __host__ __device__ inline float length() const { return sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]); }
+    __host__ __device__ inline float length() const { return sqrtf(length_squared()); }
     __host__ __device__ inline float length_squared() const { return e[0] * e[0] + e[1] * e[1] + e[2] * e[2]; }
-    __host__ __device__ inline void make_unit_vector();
+    __host__ __device__ inline bool near_zero() const {
+        // Return true if the vector is close to zero in all dimensions.
+        auto s = 1e-8;
+        return (std::fabs(e[0]) < s) && (std::fabs(e[1]) < s) && (std::fabs(e[2]) < s);
+    }
 
     __device__ static vec3 random(curandState* rand_state) { return vec3(random_float(rand_state), random_float(rand_state), random_float(rand_state)); }
     __device__ static vec3 random(float min, float max, curandState* rand_state) { return vec3(random_float(min, max, rand_state), random_float(min, max, rand_state), random_float(min, max, rand_state)); }
-
-    float e[3];
 };
 
+
+// point3 and color is just an alias for vec3, but useful for geometric clarity in the code.
 using point3 = vec3;
 using color = vec3;
 
+
+// Vector Utility Functions
 inline std::istream& operator>>(std::istream& is, vec3& t) {
     is >> t.e[0] >> t.e[1] >> t.e[2];
     return is;
@@ -71,11 +78,6 @@ inline std::istream& operator>>(std::istream& is, vec3& t) {
 inline std::ostream& operator<<(std::ostream& os, const vec3& t) {
     os << t.e[0] << " " << t.e[1] << " " << t.e[2];
     return os;
-}
-
-__host__ __device__ inline void vec3::make_unit_vector() {
-    float k = 1.0 / sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
-    e[0] *= k; e[1] *= k; e[2] *= k;
 }
 
 __host__ __device__ inline vec3 operator+(const vec3& v1, const vec3& v2) {
@@ -165,22 +167,11 @@ __host__ __device__ inline vec3 unit_vector(vec3 v) {
     return v / v.length();
 }
 
-#define RANDVEC3 vec3(curand_uniform(local_rand_state),curand_uniform(local_rand_state),curand_uniform(local_rand_state))
-
-__device__ vec3 random_in_unit_sphere(curandState* local_rand_state) {
-    vec3 p;
-    do {
-        p = 2.0f * RANDVEC3 - vec3(1, 1, 1);
-    } while (p.length_squared() >= 1.0f);
-    return p;
-}
-
 __device__ inline vec3 random_unit_vector(curandState* rand_state) {
     while (true) {
         auto p = vec3::random(-1.0f, 1.0f, rand_state);
         auto lensq = p.length_squared();
-        if (1e-160 < lensq && lensq <= 1) 
-            return p / std::sqrt(lensq);  // Checking whether point P is inside the sphere
+        if (1e-160 < lensq && lensq <= 1) return p / std::sqrt(lensq);  // Checking whether point P is inside the sphere
     }
 }
 
@@ -222,4 +213,4 @@ __device__ inline vec3 refract(const vec3& uv, const vec3& n, float etai_over_et
     return r_out_perp + r_out_parallel;
 }
 
-#endif
+

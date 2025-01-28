@@ -1,8 +1,7 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
-#include "hittable.h"
-#include "ray.h"
+#include "material.h"
 
 class camera {
 public:
@@ -15,7 +14,7 @@ public:
     float  aspect_ratio = 16.0/9.0;  // Ratio of image width over height
     int    image_width = 1200;  // Rendered image width in pixel count
     int    samples_per_pixel = 10;   // Count of random samples for each pixel
-
+        
     __device__ camera() {
         initialize();
     }
@@ -97,23 +96,37 @@ __device__ ray camera::get_ray(float col, float row, curandState* local_rand_sta
 
 __device__ color ray_color(const ray& r, hittable** world, curandState* local_rand_state) {
     ray cur_ray = r;
-    float cur_attenuation = 1.0f;
+    color cur_attenuation = color(1.0, 1.0, 1.0);
+
     for (int i = 0; i < 50; i++) {
         hit_record rec;
-        if ((*world)->hit(cur_ray, interval(0.001f, infinity), rec)) {
-            vec3 direction = rec.normal + random_unit_vector(local_rand_state);
-            cur_attenuation *= 0.5f;
-            cur_ray = ray(rec.p, direction - rec.p);
+
+        // If hit
+        if ((*world)->hit(cur_ray, interval(0.001f, FLT_MAX), rec)) {
+            ray scattered;
+            color attenuation;
+
+            // Offset the origin slightly along the normal
+            vec3 offset_origin = rec.p + rec.normal * 0.001f;
+
+            if (rec.mat_ptr->scatter(cur_ray, rec, attenuation, scattered, local_rand_state)) {
+                cur_attenuation *= attenuation;
+                cur_ray = ray(offset_origin, scattered.direction());
+            }
+            else {
+                return vec3(0.0, 0.0, 0.0);
+            }
         }
-        else{
+        else {
             vec3 unit_direction = unit_vector(cur_ray.direction());
-            auto t = 0.5 * (unit_direction.y() + 1.0);
-            vec3 c = (1.0f-t)*vec3(1.0, 1.0, 1.0) + t*vec3(0.5, 0.7, 1.0);
+            float t = 0.5f * (unit_direction.y() + 1.0f);
+            vec3 c = (1.0f - t) * vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);
             return cur_attenuation * c;
         }
     }
-    return vec3(0.0, 0.0, 0.0); // exceeded recursion
+    return vec3(0.0, 0.0, 0.0); // Exceeded max recursion
 }
+
 
 //ray cur_ray = r;
 //float cur_attenuation = 1.0f;

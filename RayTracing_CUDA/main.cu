@@ -1,10 +1,11 @@
 #include "utile.h"
-
-#include "camera.h"
-#include "hittable.h"
-#include "hittable_list.h"
 #include "sphere.h"
+#include "hittable_list.h"
+#include "camera.h"
+#include "material.h"
 
+__constant__ int d_samples_per_pixel;
+__constant__ float d_pixel_samples_scale;
 #define checkCudaErrors(val) check_cuda((val), #val, __FILE__, __LINE__)
 
 void check_cuda(cudaError_t result, char const* const func, const char* const file, int const line) {
@@ -15,9 +16,6 @@ void check_cuda(cudaError_t result, char const* const func, const char* const fi
         exit(99);
     }
 }
-
-__constant__ int d_samples_per_pixel;
-__constant__ float d_pixel_samples_scale;
 
 // Initialize cuRAND state for a single thread
 __global__ void rand_init(curandState* rand_state) {
@@ -40,20 +38,21 @@ __global__ void render_init(int max_x, int max_y, curandState* rand_state) {
 __global__ void render(vec3* fb, int max_x, int max_y, int samples_per_pixel, camera** cam, hittable ** d_world, curandState* rand_state) {
     int col = threadIdx.x + blockIdx.x * blockDim.x;
     int row = threadIdx.y + blockIdx.y * blockDim.y;
-    int depth = 50;
-    int pixel_index = row * max_x + col;
-    curandState local_rand_state = rand_state[pixel_index];
 
     if ((col >= max_x) || (row >= max_y)) return;
 
-    float u = float(col) / float(max_x);
-    float v = float(row) / float(max_y);
+    int depth = 50;
+    int pixel_index = row * max_x + col;
+    curandState local_rand_state = rand_state[pixel_index];
 
     color pixel_color(0, 0, 0); 
     for (int sample = 0; sample < samples_per_pixel; sample++) {
         ray r = (*cam)->get_ray(col, row, &local_rand_state);
         pixel_color += ray_color(r, d_world, &local_rand_state);
     }
+
+    rand_state[pixel_index] = local_rand_state;
+
     pixel_color /= float(samples_per_pixel);
     
     pixel_color[0] = linear_to_gamma(pixel_color[0]);
@@ -85,18 +84,28 @@ __global__ void render(vec3* fb, int max_x, int max_y, int samples_per_pixel, ca
 //    fb[pixel_index] = ray_color(r, d_world);
 //}
 
-__global__ void create_world(hittable** objects, hittable** d_world, camera** cam) {
+__global__ void create_world(hittable** d_list, hittable** d_world, camera** d_camera, int image_width, int image_height, curandState* rand_state, int num_hittables) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
-        objects[0] = new sphere(vec3(0, 0, -1), 0.5);
-        objects[1] = new sphere(vec3(0, -100.5, -1), 100);
-        *d_world = new hittable_list(objects, 2);
-        *cam = new camera();
+        d_list[0] = new sphere(vec3(0, 0, -1), 0.5,
+            new lambertian(vec3(0.1, 0.2, 0.5)));
+        d_list[1] = new sphere(vec3(0, -100.5, -1), 100,
+            new lambertian(vec3(0.8, 0.8, 0.0)));
+        d_list[2] = new sphere(vec3(1, 0, -1), 0.5,
+            new metal(vec3(0.8, 0.6, 0.2), 0.0));
+        d_list[3] = new sphere(vec3(-1, 0, -1), 0.5,
+            new dielectric(1.5));
+        d_list[4] = new sphere(vec3(-1, 0, -1), 0.4,
+            new dielectric(1.00/1.50));
+        *d_world = new hittable_list(d_list, 5);
+        *d_camera = new camera();
     }
 }
 
-__global__ void free_world(hittable** d_object_list, hittable** d_world, camera** cam) {
-    delete d_object_list[0];
-    delete d_object_list[1];
+__global__ void free_world(hittable** objects, hittable** d_world, camera** cam) {
+    for (int i = 0; i < 4; i++) {
+        delete ((sphere*)objects[i])->mat_ptr;
+        delete objects[i];
+    }
     delete* d_world;
     delete* cam;
 }
@@ -133,7 +142,7 @@ int main() {
     checkCudaErrors(cudaDeviceSynchronize());
 
     hittable** d_object_list;
-    int num_hittables = 3;         // Total object number
+    int num_hittables = 5;         // Total object number
     checkCudaErrors(cudaMalloc((void**)&d_object_list, num_hittables * sizeof(hittable*)));
 
     hittable** d_world;
@@ -143,7 +152,7 @@ int main() {
     checkCudaErrors(cudaMalloc((void**)&cam, sizeof(camera*)));
 
     // make our world of hittables
-    create_world << <1, 1 >> > (d_object_list, d_world, cam);
+    create_world << <1, 1 >> > (d_object_list, d_world, cam, image_width, image_height, d_rand_state_2, num_hittables);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
@@ -171,14 +180,14 @@ int main() {
     checkCudaErrors(cudaDeviceSynchronize());
 
     render << <blocks, threads >> > (d_fb, image_width, image_height, samples_per_pixel, cam, d_world, d_rand_state_1);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     // 안 되는거 보완
     //int threads_per_block = 256;
     //int blocks_per_grid = (image_width * image_height + threads_per_block - 1) / threads_per_block;
     //render << <blocks_per_grid, threads_per_block >> > (d_fb, image_width, image_height, cam, d_world);
 
-    checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaDeviceSynchronize());
 
     // Copy results back to host
     vec3* h_fb = (vec3*)malloc(fb_size); // Host memory

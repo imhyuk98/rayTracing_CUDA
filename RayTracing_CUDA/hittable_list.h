@@ -1,8 +1,6 @@
 #ifndef HITTABLE_LIST_H
 #define HITTABLE_LIST_H
 
-#include "hittable.h"
-
 class hittable_list : public hittable {
 public:
     __device__ hittable_list() {}

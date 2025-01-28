@@ -6,10 +6,11 @@
 class sphere : public hittable {
 public:
     __device__ sphere() {}
-    __device__ sphere(vec3 cen, float r) : center(cen), radius(r) {};
+    __device__ sphere(point3 center, float radius, material* m) : center(center), radius(std::fmax(0.0f, radius)), mat_ptr(m) {}
     __device__ virtual bool hit(const ray& r, interval ray_t, hit_record& rec) const;
     vec3 center;
     float radius;
+    material* mat_ptr;
 };
 
 __device__ bool sphere::hit(const ray& r, interval ray_t, hit_record& rec) const {
@@ -33,10 +34,10 @@ __device__ bool sphere::hit(const ray& r, interval ray_t, hit_record& rec) const
     }
 
     rec.t = root;                                       // t
-    rec.p = r.point_at_parameter(rec.t);                                // intersection point
+    rec.p = r.at(rec.t);                                // intersection point
     vec3 outward_normal = (rec.p - center) / radius;    // normalize with radius
     rec.normal = (rec.p - center) / radius;
-
+    rec.mat_ptr = mat_ptr;
     return true;
 }
 
