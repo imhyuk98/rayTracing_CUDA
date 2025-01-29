@@ -2,6 +2,10 @@
 
 class hit_record;
 
+
+
+
+
 class material {
 public:
     __device__ virtual bool scatter(const ray& r_in, const hit_record& rec, color& attenuation, ray& scattered, curandState* rand_state) const {
@@ -44,51 +48,40 @@ public:
 
 class dielectric : public material {
 public:
-    __device__ dielectric(float refraction_index) : refraction_index(refraction_index) {}
+    __device__ dielectric(float ri) : ref_idx(ri) {}
+    __device__ virtual bool scatter(const ray& r_in, const hit_record& rec, color& attenuation, ray& scattered, curandState* local_rand_state) const {
+        vec3 outward_normal;
+        vec3 reflected = reflect(r_in.direction(), rec.normal);
+        float ni_over_nt;
+        attenuation = color(1.0, 1.0, 1.0);
+        vec3 refracted;
+        float reflect_prob;
+        float cosine;
 
-    __device__ bool scatter(const ray& r_in, const hit_record& rec,
-        color& attenuation, ray& scattered,
-        curandState* rand_state) const override {
-        attenuation = color(1.0f, 1.0f, 1.0f);
-
-        // 법선 방향 설정
-        vec3 outward_normal = rec.front_face ? rec.normal : -rec.normal;
-
-        // 굴절율 비율 설정
-        float refraction_ratio = rec.front_face ? (1.0f / refraction_index) : refraction_index;
-
-        // cos(theta) 계산
-        vec3 unit_direction = unit_vector(r_in.direction());
-        float cos_theta = fminf(dot(-unit_direction, outward_normal), 1.0f);
-        float sin_theta = sqrtf(1.0f - cos_theta * cos_theta);
-
-        // 굴절 불가능 여부 확인
-        bool cannot_refract = refraction_ratio * sin_theta > 1.0f;
-
-        // 방향 선택: 굴절 또는 반사
-        vec3 direction;
-        if (cannot_refract || reflectance(cos_theta, refraction_ratio) > random_float(rand_state)) {
-            // 반사
-            direction = reflect(unit_direction, outward_normal);
+        if (dot(r_in.direction(), rec.normal) > 0.0f) {
+            outward_normal = -rec.normal;
+            ni_over_nt = ref_idx;
+            cosine = dot(r_in.direction(), rec.normal) / r_in.direction().length();
+            cosine = sqrt(1.0f - ref_idx * ref_idx * (1 - cosine * cosine));
         }
         else {
-            // 굴절
-            direction = refract(unit_direction, outward_normal, refraction_ratio);
+            outward_normal = rec.normal;
+            ni_over_nt = 1.0f / ref_idx;
+            cosine = -dot(r_in.direction(), rec.normal) / r_in.direction().length();
         }
 
-        scattered = ray(rec.p, direction);
+        if (refract(r_in.direction(), outward_normal, ni_over_nt, refracted))
+            reflect_prob = schlick(cosine, ref_idx);
+        else
+            reflect_prob = 1.0f;
+
+        if (curand_uniform(local_rand_state) < reflect_prob)
+            scattered = ray(rec.p, reflected);
+        else
+            scattered = ray(rec.p, refracted);
+
         return true;
     }
 
-
-    // Refractive index in vacuum or air, or the ratio of the material's refractive index over
-    // the refractive index of the enclosing media
-    __device__ float reflectance(float cosine, float refraction_index) const {
-        // Use Schlick's approximation for reflectance.
-        auto r0 = (1 - refraction_index) / (1 + refraction_index);
-        r0 = r0 * r0;
-        return r0 + (1 - r0) * powf((1 - cosine), 5.0f);
-    }
-
-    float refraction_index;
+    float ref_idx;
 };

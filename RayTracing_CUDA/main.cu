@@ -6,6 +6,8 @@
 
 __constant__ int d_samples_per_pixel;
 __constant__ float d_pixel_samples_scale;
+
+#define RND (curand_uniform(&local_rand_state))      
 #define checkCudaErrors(val) check_cuda((val), #val, __FILE__, __LINE__)
 
 void check_cuda(cudaError_t result, char const* const func, const char* const file, int const line) {
@@ -62,52 +64,61 @@ __global__ void render(vec3* fb, int max_x, int max_y, int samples_per_pixel, ca
     fb[pixel_index] = pixel_color;
 }
 
-//__global__ void render(vec3* fb, int max_x, int max_y, camera** cam, hittable** d_world) {
-//    // 1D 스레드와 블록 구성에서 글로벌 인덱스 계산
-//    int thread_id = threadIdx.x + blockIdx.x * blockDim.x;
-//
-//    if (thread_id >= max_x * max_y) return;
-//
-//    // 1D 인덱스를 2D (col, row)로 변환w 1
-//    int col = thread_id % max_x;  // 열 = thread_id를 이미지 가로 크기로 나눈 나머지
-//    int row = thread_id / max_x;  // 행 = thread_id를 이미지 가로 크기로 나눈 몫
-//
-//    // 픽셀 인덱스 계산 (1D 배열 접근용)
-//    int pixel_index = row * max_x + col;
-//
-//    // u와 v 계산
-//    float u = float(col) / float(max_x);
-//    float v = float(row) / float(max_y);
-//
-//    // Ray 생성 및 색상 계산
-//    ray r = (*cam)->get_ray(col, row);
-//    fb[pixel_index] = ray_color(r, d_world);
-//}
-
-__global__ void create_world(hittable** d_list, hittable** d_world, camera** d_camera, int image_width, int image_height, curandState* rand_state, int num_hittables) {
+__global__ void create_world(hittable** objects, hittable** d_world, camera** d_camera, int image_width, int image_height, curandState* rand_state, int num_hittables) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
-        d_list[0] = new sphere(vec3(0, 0, -1), 0.5,
-            new lambertian(vec3(0.1, 0.2, 0.5)));
-        d_list[1] = new sphere(vec3(0, -100.5, -1), 100,
-            new lambertian(vec3(0.8, 0.8, 0.0)));
-        d_list[2] = new sphere(vec3(1, 0, -1), 0.5,
-            new metal(vec3(0.8, 0.6, 0.2), 0.0));
-        d_list[3] = new sphere(vec3(-1, 0, -1), 0.5,
-            new dielectric(1.5));
-        d_list[4] = new sphere(vec3(-1, 0, -1), 0.4,
-            new dielectric(1.00/1.50));
-        *d_world = new hittable_list(d_list, 5);
-        *d_camera = new camera();
+        int i = 0;
+
+        // Sphere Setup
+        curandState local_rand_state = *rand_state;
+        objects[0] = new sphere(point3(0, -1000.0, -1), 1000, new lambertian(color(0.5, 0.5, 0.5)));
+
+        for (int a = -11; a < 11; a++) {
+            for (int b = -11; b < 11; b++) {
+                float choose_mat = RND;
+                point3 center(a + 0.9 * RND, 0.2, b + 0.9 * RND);
+
+                if (choose_mat < 0.8) {
+                    // diffuse
+                    objects[++i] = new sphere(center, 0.2, new lambertian(color(RND * RND, RND * RND, RND * RND)));
+                }
+                else if (choose_mat < 0.95) {
+                    // metal
+                    objects[++i] = new sphere(center, 0.2, new metal(color(0.5f * (1.0f + RND), 0.5f * (1.0f + RND), 0.5f * (1.0f + RND)), 0.5f * RND));
+                }
+                else {
+                    // glass
+                    objects[++i] = new sphere(center, 0.2, new dielectric(1.5));
+                }
+            }
+        }
+
+        objects[++i] = new sphere(point3(0, 1, 0), 1.0, new dielectric(1.5));
+        objects[++i] = new sphere(point3(-4, 1, 0), 1.0, new lambertian(color(0.4, 0.2, 0.1)));
+        objects[++i] = new sphere(point3(4, 1, 0), 1.0, new metal(color(0.7, 0.6, 0.5), 0.0));
+
+        *rand_state = local_rand_state;
+        *d_world = new hittable_list(objects, num_hittables);
+
+        // Camera Setup
+        vec3 lookfrom(13, 2, 3);
+        vec3 lookat(0, 0, 0);
+        vec3 vup(0, 1, 0),
+        float dist_to_focus = 10.0;
+        float aperture = 0.1;
+        float vfov = 20.0f;
+        float aspect = float(image_width) / float(image_height);
+
+        *d_camera = new camera(lookfrom, lookat, vup, vfov, aspect, dist_to_focus, image_width, image_height);
     }
 }
 
-__global__ void free_world(hittable** objects, hittable** d_world, camera** cam) {
-    for (int i = 0; i < 4; i++) {
-        delete ((sphere*)objects[i])->mat_ptr;
-        delete objects[i];
+__global__ void free_world(hittable** d_object_list, hittable** d_world, camera** d_camera, int num_hittables) {
+    for (int i = 0; i < num_hittables; i++) {
+        delete ((sphere*)d_object_list[i])->mat_ptr;
+        delete d_object_list[i];
     }
     delete* d_world;
-    delete* cam;
+    delete* d_camera;
 }
 
 int main() {
@@ -142,7 +153,7 @@ int main() {
     checkCudaErrors(cudaDeviceSynchronize());
 
     hittable** d_object_list;
-    int num_hittables = 5;         // Total object number
+    int num_hittables = 22 * 22 + 1 + 3;         // Total object number
     checkCudaErrors(cudaMalloc((void**)&d_object_list, num_hittables * sizeof(hittable*)));
 
     hittable** d_world;
@@ -164,14 +175,6 @@ int main() {
     // Start recording time
     checkCudaErrors(cudaEventRecord(start, 0));
 
-    // Render our buffer
-    // 안 되는거
-    //int threads_per_block = 256; // Optimal number of threads per block
-    //int blocks_per_grid = (num_pixels + threads_per_block - 1) / threads_per_block; // Calculate grid size
-    //render << <blocks_per_grid, threads_per_block >> > (d_fb, image_width, image_height, cam, d_world);
-
-    // 일반적c
-
     dim3 blocks(image_width / tx + 1, image_height / ty + 1);
     dim3 threads(tx, ty);
 
@@ -183,16 +186,9 @@ int main() {
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
-    // 안 되는거 보완
-    //int threads_per_block = 256;
-    //int blocks_per_grid = (image_width * image_height + threads_per_block - 1) / threads_per_block;
-    //render << <blocks_per_grid, threads_per_block >> > (d_fb, image_width, image_height, cam, d_world);
-
-
     // Copy results back to host
     vec3* h_fb = (vec3*)malloc(fb_size); // Host memory
     checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
-
 
     /////////////////////////////////////////////////////////////////////////////
     // Output File
@@ -200,7 +196,7 @@ int main() {
 
     FILE* f = fopen("image3.ppm", "w");
     std::fprintf(f, "P3\n%d %d\n%d\n", image_width, image_height, 255);
-    for (int j = image_height - 1; j >= 0; j--) {
+    for (int j = 0; j < image_height; j++) {
         for (int i = 0; i < image_width; i++) {
             size_t pixel_index = j * image_width + i;
             auto ir = h_fb[pixel_index].r();
@@ -217,37 +213,6 @@ int main() {
     }
     std::clog << "\rDone.                 \n";
 
-    /////////////////////////////////////////////////////////////////////////////
-    // Output Console
-    /////////////////////////////////////////////////////////////////////////////
-
-    //std::cout << "P3\n" << image_width << " " << image_height << "\n255\n";
-    //for (int j = image_height - 1; j >= 0; j--) {
-    //    for (int i = 0; i < image_width; i++) {
-    //        size_t pixel_index = j * image_width + i;
-    //        int ir = int(255.99 * h_fb[pixel_index].r());
-    //        int ig = int(255.99 * h_fb[pixel_index].g());
-    //        int ib = int(255.99 * h_fb[pixel_index].b());
-    //        std::cout << ir << " " << ig << " " << ib << "\n";
-    //    }
-    //}
-
-    //std::cout << "P3\n" << image_width << " " << image_height << "\n255\n";
-    //for (int j = image_height - 1; j >= 0; j--) {
-    //    for (int i = 0; i < image_width; i++) {
-    //        size_t pixel_index = j * image_width + i;
-    //        auto ir = h_fb[pixel_index].r();
-    //        auto ig = h_fb[pixel_index].g();
-    //        auto ib = h_fb[pixel_index].b();
-
-    //        static const interval intensity(0.000, 0.999);
-    //        int rbyte = int(255.99 * intensity.clamp(ir));
-    //        int gbyte = int(255.99 * intensity.clamp(ig));
-    //        int bbyte = int(255.99 * intensity.clamp(ib));
-    //        std::cout << rbyte << " " << gbyte << " " << bbyte << "\n";
-    //    }
-    //}
-
     // Stop recording time
     checkCudaErrors(cudaEventRecord(stop, 0));
     checkCudaErrors(cudaEventSynchronize(stop));
@@ -260,13 +225,18 @@ int main() {
     // Destroy CUDA Events
     checkCudaErrors(cudaEventDestroy(start));
     checkCudaErrors(cudaEventDestroy(stop));
+
     // clean up
     checkCudaErrors(cudaDeviceSynchronize());
-    free_world << <1, 1 >> > (d_object_list, d_world, cam);
+    free_world << <1, 1 >> > (d_object_list, d_world, cam, num_hittables);
     checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaFree(d_object_list));
+    checkCudaErrors(cudaFree(cam));
     checkCudaErrors(cudaFree(d_world));
+    checkCudaErrors(cudaFree(d_object_list));
+    checkCudaErrors(cudaFree(d_rand_state_1));
+    checkCudaErrors(cudaFree(d_rand_state_2));
     checkCudaErrors(cudaFree(d_fb));
+    free(h_fb);
 
     // useful for cuda-memcheck --leak-check full
     cudaDeviceReset();

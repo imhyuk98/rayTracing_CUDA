@@ -6,59 +6,55 @@
 class camera {
 public:
     int    image_height;   // Rendered image height
+    float  pixel_samples_scale;  // Color scale factor for a sum of pixel samples
     point3 center;         // Camera center
     point3 pixel00_loc;    // Location of pixel 0, 0
     vec3   pixel_delta_u;  // Offset to pixel to the right
     vec3   pixel_delta_v;  // Offset to pixel below
-    vec3   unit_direction;
-    float  aspect_ratio = 16.0/9.0;  // Ratio of image width over height
-    int    image_width = 1200;  // Rendered image width in pixel count
-    int    samples_per_pixel = 10;   // Count of random samples for each pixel
+    vec3   u, v, w;              // Camera frame basis vectors
+    vec3   defocus_disk_u;       // Defocus disk horizontal radius
+    vec3   defocus_disk_v;       // Defocus disk vertical radius
+
+    float  defocus_angle = 0;  // Variation angle of rays through each pixel
+    float  focus_dist = 10;    // Distance from camera lookfrom point to plane of perfect focus
         
-    __device__ camera() {
-        initialize();
+    __device__ camera(vec3 lookfrom, vec3 lookat, vec3 vup, float vfov, float aspect, float focus_dist, int image_width, int image_height) {
+        initialize(lookfrom, lookat, vup, vfov, aspect, focus_dist, image_width, image_height);
     }
-    __device__ void initialize();
+    __device__ void initialize(vec3 lookfrom, vec3 lookat, vec3 vup, float vfov, float aspect, float focus_dist, int image_width, int image_height);
     __device__ color ray_color(const ray& r, hittable** world);
     __device__ ray get_ray(float col, float row, curandState* local_rand_state);
 };
 
-__device__ void camera::initialize() {
-    // Camera settings
-    point3 lookfrom(0, 0, 0);  // Camera position
-    point3 lookat(0, 0, -1);   // Scene center
-    vec3   vup(0, 1, 0);       // Up direction
-
-    image_height = int(image_width / aspect_ratio);
-    image_height = (image_height < 1) ? 1 : image_height;
-
+__device__ void camera::initialize(vec3 lookfrom, vec3 lookat, vec3 vup, float vfov, float aspect, float focus_dist, int image_width, int image_height) {
+    
     center = lookfrom;
-
-    // Determine viewport dimensions
-    auto focal_length = 1.0;
-    auto viewport_height = 2.0;
+    auto theta = degrees_to_radians(vfov);
+    auto h = tan(theta / 2);
+    auto viewport_height = 2 * h * focus_dist;
     auto viewport_width = viewport_height * (double(image_width) / image_height);
 
     // Calculate camera basis vectors
-    vec3 w = unit_vector(lookfrom - lookat);       // Camera's backward direction
-    vec3 u = unit_vector(cross(vup, w));           // Camera's right direction
-    vec3 v = cross(w, u);                          // Camera's up direction
+    w = unit_vector(lookfrom - lookat);       // Camera's backward direction
+    u = unit_vector(cross(vup, w));           // Camera's right direction
+    v = cross(w, u);                          // Camera's up direction
 
     // Calculate viewport edges
-    auto viewport_u = viewport_width * u;          // Horizontal axis of the viewport
-    auto viewport_v = viewport_height * v;         // Vertical axis of the viewport
+    vec3 viewport_u = viewport_width * u;    // Vector across viewport horizontal edge
+    vec3 viewport_v = viewport_height * -v;  // Vector down viewport vertical edge
 
     // Pixel deltas
     pixel_delta_u = viewport_u / image_width;      // Pixel width
     pixel_delta_v = viewport_v / image_height;     // Pixel height
 
     // Upper-left corner of the viewport
-    auto viewport_upper_left =
-        center - w * focal_length - viewport_u / 2 - viewport_v / 2;
+    auto viewport_upper_left = center - (focus_dist * w) - viewport_u / 2 - viewport_v / 2;
     pixel00_loc = viewport_upper_left + 0.5 * (pixel_delta_u + pixel_delta_v);
 
-    // Default ray direction for debugging
-    unit_direction = unit_vector(lookat - lookfrom);
+    // Calculate the camera defocus disk basis vectors.
+    auto defocus_radius = focus_dist * std::tan(degrees_to_radians(defocus_angle / 2));
+    defocus_disk_u = u * defocus_radius;
+    defocus_disk_v = v * defocus_radius;
 }
 
 
@@ -68,50 +64,26 @@ __device__ ray camera::get_ray(float col, float row, curandState* local_rand_sta
         + ((col + offset.x()) * pixel_delta_u)
         + ((row + offset.y()) * pixel_delta_v);
 
-    vec3 ray_origin = center;
+    auto ray_origin = (defocus_angle <= 0) ? center : defocus_disk_sample(center, defocus_disk_u, defocus_disk_v, local_rand_state);
     vec3 ray_direction = pixel_sample - ray_origin;
 
     return ray(ray_origin, ray_direction);
 }
 
-//__device__ color ray_color(const ray& r, hittable** world, curandState* local_rand_state) {
-//    ray cur_ray = r;
-//    float cur_attenuation = 1.0f;
-//    for(int i = 0; i < 50; i++) {
-//        hit_record rec;
-//        if ((*world)->hit(cur_ray, interval(0.001f, FLT_MAX), rec)) {
-//            vec3 target = rec.p + rec.normal + random_in_unit_sphere(local_rand_state);
-//            cur_attenuation *= 0.5f;
-//            cur_ray = ray(rec.p, target-rec.p);
-//        }
-//        else {
-//            vec3 unit_direction = unit_vector(cur_ray.direction());
-//            float t = 0.5f*(unit_direction.y() + 1.0f);
-//            vec3 c = (1.0f-t)*vec3(1.0, 1.0, 1.0) + t*vec3(0.5, 0.7, 1.0);
-//            return cur_attenuation * c;
-//        }
-//    }
-//    return vec3(0.0,0.0,0.0); // exceeded recursion
-//}
-
 __device__ color ray_color(const ray& r, hittable** world, curandState* local_rand_state) {
+    int maxDepth = 50;      // Ray tree maximum depth
+
     ray cur_ray = r;
     color cur_attenuation = color(1.0, 1.0, 1.0);
 
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < maxDepth; i++) {
         hit_record rec;
-
-        // If hit
         if ((*world)->hit(cur_ray, interval(0.001f, FLT_MAX), rec)) {
             ray scattered;
             color attenuation;
-
-            // Offset the origin slightly along the normal
-            vec3 offset_origin = rec.p + rec.normal * 0.001f;
-
             if (rec.mat_ptr->scatter(cur_ray, rec, attenuation, scattered, local_rand_state)) {
                 cur_attenuation *= attenuation;
-                cur_ray = ray(offset_origin, scattered.direction());
+                cur_ray = scattered;
             }
             else {
                 return vec3(0.0, 0.0, 0.0);
@@ -124,27 +96,6 @@ __device__ color ray_color(const ray& r, hittable** world, curandState* local_ra
             return cur_attenuation * c;
         }
     }
-    return vec3(0.0, 0.0, 0.0); // Exceeded max recursion
+    return vec3(0.0, 0.0, 0.0); // exceeded recursion
 }
-
-
-//ray cur_ray = r;
-//float cur_attenuation = 1.0f;
-//for (int i = 0; i < 50; i++) {
-//    hit_record rec;
-//    if ((*world)->hit(cur_ray, interval(0.001f, FLT_MAX), rec)) {
-//        vec3 target = rec.p + rec.normal + random_unit_vector(local_rand_state);
-//        cur_attenuation *= 0.5f;
-//        cur_ray = ray(rec.p, target - rec.p);
-//    }
-//    else {
-//        vec3 unit_direction = unit_vector(cur_ray.direction());
-//        float t = 0.5f * (unit_direction.y() + 1.0f);
-//        vec3 c = (1.0f - t) * vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);
-//        return cur_attenuation * c;
-//    }
-// 
-
-
-
 #endif
