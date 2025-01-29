@@ -2,10 +2,6 @@
 
 class hit_record;
 
-
-
-
-
 class material {
 public:
     __device__ virtual bool scatter(const ray& r_in, const hit_record& rec, color& attenuation, ray& scattered, curandState* rand_state) const {
@@ -48,7 +44,7 @@ public:
 
 class dielectric : public material {
 public:
-    __device__ dielectric(float ri) : ref_idx(ri) {}
+    __device__ dielectric(float ref_idx) : ref_idx(ref_idx) {}
     __device__ virtual bool scatter(const ray& r_in, const hit_record& rec, color& attenuation, ray& scattered, curandState* local_rand_state) const {
         vec3 outward_normal;
         vec3 reflected = reflect(r_in.direction(), rec.normal);
